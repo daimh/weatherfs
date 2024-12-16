@@ -55,23 +55,25 @@ $ cat zipcode/96701
 ```
 
 ### Usage 
+- clone this repo
+
 - obtain a free api key from 
 [openweathermap.org](https://openweathermap.org/appid).
 the freemium plan is good enough, all it needs is an email address.
 
-- clone this repo, set the key in file 'weatherfs.json'
+- set the key in file 'weatherfs.json'
 
 - install development package per your Linux distribution
 ```
 # apt install libfuse3-dev libcurl4-openssl-dev libjansson-dev libjansson4 # Ubuntu
 # pacman -S --needed fuse3 curl jansson # Archlinux
 ```
-
 - compile and run it
 ```
-make
+cmake -B build
+cmake --build build 
 mkdir zipcode
-./weatherfs zipcode
+build/weatherfs zipcode
 cat zipcode/96701
 umount zipcode
 ```
