@@ -29,19 +29,21 @@ SOFTWARE.
 #define URL_LEN_MAX 128
 #define FILE_SIZE_MAX 10240
 
-#include <fuse.h>
-#include <string.h>
-#include <errno.h>
-#include <stddef.h>
 #include <assert.h>
 #include <curl/curl.h>
+#include <errno.h>
+#include <fuse.h>
 #include <jansson.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <string.h>
 #include <syslog.h>
 
 static struct options {
 	const char *conf;
 	int show_help;
 	int show_version;
+	int logging;;
 } options;
 
 #define OPTION(t, p) { t, offsetof(struct options, p), 1 }
@@ -50,12 +52,14 @@ static const struct fuse_opt option_spec[] = {
 	OPTION("-h", show_help),
 	OPTION("--help", show_help),
 	OPTION("--version", show_version),
+	OPTION("-l", logging),
 	FUSE_OPT_END
 };
 
 const char* apikey = NULL;
 char (*ziparr)[ZIPCODE_LEN_MAX+1] = NULL;
 size_t zipcnt = 0;
+pthread_mutex_t ziplock;
 
 static int cmpzip(const void *p1, const void *p2) {
 	return strcmp((const char *) p1, (const char *) p2);
@@ -72,6 +76,8 @@ static int wfs_getattr(const char *path, struct stat *stbuf,
 			 struct fuse_file_info *fi) {
 	(void) fi;
 	int res = 0;
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: getattr: %s", path);
 	memset(stbuf, 0, sizeof(struct stat));
 	if (strcmp(path, "/") == 0) {
 		stbuf->st_mode = S_IFDIR | 0755;
@@ -95,9 +101,10 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	(void) flags;
 	size_t i;
 
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: readdir: %s", path);
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
-
 	filler(buf, ".", NULL, 0, 0);
 	filler(buf, "..", NULL, 0, 0);
 	for (i=0; i < zipcnt; i++)
@@ -106,10 +113,39 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 }
 
 static int wfs_open(const char *path, struct fuse_file_info *fi) {
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: open: %s", path);
 	if (bsearch(path+1, ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip) == NULL)
 		return -ENOENT;
 	if ((fi->flags & O_ACCMODE) != O_RDONLY)
 		return -EACCES;
+	return 0;
+}
+
+static int wfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+	size_t len = strlen(path);
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: create: %s", path);
+	if (len > ZIPCODE_LEN_MAX + 1 || len <= 1)
+		return -ENOENT;
+	if (!bsearch(path+1, ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip)) {
+		if (pthread_mutex_lock(&ziplock)) {
+			syslog(LOG_USER, "weatherfs: create: failed to acquire lock");
+			return -ENOENT;
+		}
+		ziparr = reallocarray(ziparr, zipcnt+1, ZIPCODE_LEN_MAX+1);
+		strcpy(ziparr[zipcnt++], path+1);
+		qsort(ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip);
+		if (pthread_mutex_unlock(&ziplock)) {
+			syslog(LOG_USER, "weatherfs: create: failed to release lock");
+			return -ENOENT;
+		}
+	}
+	return 0;
+}
+
+static int wfs_utimens(const char *path, const struct timespec ts[2],
+		struct fuse_file_info *fi) {
 	return 0;
 }
 
@@ -211,6 +247,8 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset,
 	struct buffer chunk = {buf, size, offset, 0};
 	double lat, lon;
 	json_t *root;
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: read: %s", path);
 	if (bsearch(path+1, ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip) == NULL)
 		return -ENOENT;
 	assert(URL_LEN_MAX > snprintf(url, URL_LEN_MAX,
@@ -244,7 +282,9 @@ static const struct fuse_operations wfs_oper = {
 	.getattr	= wfs_getattr,
 	.readdir	= wfs_readdir,
 	.open		= wfs_open,
+	.create		= wfs_create,
 	.read		= wfs_read,
+	.utimens	= wfs_utimens,
 };
 
 static void show_version() {
@@ -256,8 +296,10 @@ static void show_version() {
 static void show_help(const char *progname) {
 	printf("usage: %s [options] <mountpoint>\n\n", progname);
 	printf("File-system specific options:\n"
-		"    --conf=<s>          Name of the setting json file\n"
-		"                        (default: \"weatherfs.json\")\n");
+		"    --conf=<s>   Name of the setting json file\n"
+		"                 (default: \"weatherfs.json\")\n"
+		"    -l           log to user systemd journal\n\n"
+	);
 }
 
 int read_conf(const char *conf) {
@@ -296,6 +338,7 @@ int read_conf(const char *conf) {
 	}
 	json_decref(root);
 	qsort(ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip);
+	pthread_mutex_init(&ziplock, NULL);
 	return 1;
 }
 

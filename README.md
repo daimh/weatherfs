@@ -1,7 +1,7 @@
 # weatherfs: realtime weather info by zipcode in a FUSE filesystem
 
 Weatherfs mounts a FUSE filesystem, creates a file for each zipcode specified
-in the weatherfs.json conf file.
+in the weatherfs.json conf file. New zipcode can also be added with command 'touch'.
 
 Below is an example of Hawaii current weather.
 
@@ -74,7 +74,10 @@ cmake -B build
 cmake --build build 
 mkdir zipcode
 build/weatherfs zipcode
-cat zipcode/96701
+cat zipcode/96701 # Hawaii
+grep -w temp zipcode/99501 # Alaska
+touch zipcode/92328 # Death Valley
+grep -w humidity zipcode/92328
 umount zipcode
 ```
 
