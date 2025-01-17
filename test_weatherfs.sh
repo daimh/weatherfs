@@ -7,4 +7,5 @@ cat zipcode/96701 # Hawaii
 grep -w temp zipcode/99501 # Alaska
 touch zipcode/92328 # Death Valley
 grep -w temp zipcode/92328
+rm zipcode/92328
 umount zipcode

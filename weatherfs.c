@@ -36,6 +36,7 @@ SOFTWARE.
 #include <jansson.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <syslog.h>
 
@@ -122,7 +123,8 @@ static int wfs_open(const char *path, struct fuse_file_info *fi) {
 	return 0;
 }
 
-static int wfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+static int wfs_create(const char *path, mode_t mode,
+		struct fuse_file_info *fi) {
 	size_t len = strlen(path);
 	if (options.logging)
 		syslog(LOG_USER, "weatherfs: create: %s", path);
@@ -134,7 +136,7 @@ static int wfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 			return -ENOENT;
 		}
 		ziparr = reallocarray(ziparr, zipcnt+1, ZIPCODE_LEN_MAX+1);
-		strcpy(ziparr[zipcnt++], path+1);
+		strncpy(ziparr[zipcnt++], path+1, ZIPCODE_LEN_MAX+1);
 		qsort(ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip);
 		if (pthread_mutex_unlock(&ziplock)) {
 			syslog(LOG_USER, "weatherfs: create: failed to release lock");
@@ -277,6 +279,29 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset,
 	return chunk.total;
 }
 
+static int wfs_unlink(const char *path) {
+	size_t len = strlen(path);
+	char (*found)[ZIPCODE_LEN_MAX+1];
+	if (options.logging)
+		syslog(LOG_USER, "weatherfs: unlink: %s", path);
+	if (len > ZIPCODE_LEN_MAX + 1 || len <= 1)
+		return -ENOENT;
+	found = bsearch(path+1, ziparr, zipcnt, ZIPCODE_LEN_MAX+1, cmpzip);
+	if (!found)
+		return -ENOENT;
+	if (pthread_mutex_lock(&ziplock)) {
+		syslog(LOG_USER, "weatherfs: unlink: failed to acquire lock");
+		return -ENOENT;
+	}
+	memmove(found, found+1,
+		(zipcnt-- - (found - ziparr)) * (ZIPCODE_LEN_MAX + 1));
+	if (pthread_mutex_unlock(&ziplock)) {
+		syslog(LOG_USER, "weatherfs: unlink: failed to release lock");
+		return -ENOENT;
+	}
+	return 0;
+}
+
 static const struct fuse_operations wfs_oper = {
 	.init		= wfs_init,
 	.getattr	= wfs_getattr,
@@ -285,6 +310,7 @@ static const struct fuse_operations wfs_oper = {
 	.create		= wfs_create,
 	.read		= wfs_read,
 	.utimens	= wfs_utimens,
+	.unlink		= wfs_unlink,
 };
 
 static void show_version() {
